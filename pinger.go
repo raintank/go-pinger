@@ -9,9 +9,10 @@ import (
 	"time"
 
 	"golang.org/x/net/icmp"
-	"golang.org/x/net/internal/iana"
 	"golang.org/x/net/ipv4"
 )
+
+const ProtocolICMP = 1
 
 type PingStats struct {
 	Latency  []time.Duration
@@ -189,7 +190,7 @@ func (p *Pinger) listenIpv4() {
 			fmt.Println(err.Error())
 			break
 		}
-		rm, err := icmp.ParseMessage(iana.ProtocolICMP, rb[:n])
+		rm, err := icmp.ParseMessage(ProtocolICMP, rb[:n])
 		if err != nil {
 			fmt.Println(err.Error())
 			continue
