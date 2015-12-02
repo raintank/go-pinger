@@ -73,8 +73,6 @@ WAIT:
 		}
 	}
 
-	close(e.Recv)
-
 	e.Done <- e.Stats
 }
 
@@ -205,12 +203,15 @@ func (p *Pinger) listenIpv4() {
 			req, ok := p.queue[key]
 			p.m.RUnlock()
 			if ok {
-				if p.Debug {
-					log.Printf("reply packet matches request packet. %s - %d:%d\n", peer.String(), body.ID, body.Seq)
-				}
+				//delete this packets key from the queue
 				p.m.Lock()
 				delete(p.queue, key)
 				p.m.Unlock()
+
+				if p.Debug {
+					log.Printf("reply packet matches request packet. %s - %d:%d\n", peer.String(), body.ID, body.Seq)
+				}
+
 				resp := &EchoResponse{
 					Peer:     peer.String(),
 					Id:       body.ID,
