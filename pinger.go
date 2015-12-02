@@ -94,11 +94,11 @@ func (e *EchoRequest) Send() {
 			}
 			continue
 		}
-		e.pinger.WritePkt(wb, e.Peer)
 		e.m.Lock()
 		e.Stats.SentTime[i] = time.Now()
 		e.Stats.Sent++
 		e.m.Unlock()
+		e.pinger.WritePkt(wb, e.Peer)
 	}
 }
 
