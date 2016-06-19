@@ -47,6 +47,7 @@ func TestBadIP(t *testing.T) {
 
 func TestPing(t *testing.T) {
 	p := NewPinger()
+	p.Debug = true
 	p.m.RLock()
 	if len(p.queue) > 0 {
 		t.Fatalf("queue should be empty")
@@ -72,7 +73,6 @@ func TestPing(t *testing.T) {
 	p.m.RUnlock()
 
 	results := <-c
-
 	p.m.RLock()
 	if len(p.queue) != 0 {
 		t.Fatalf("queue should be empty")
@@ -109,7 +109,7 @@ func TestConcurrentPing(t *testing.T) {
 	p.m.RUnlock()
 	var wg sync.WaitGroup
 
-	for i := 0; i < 5; i++ {
+	for i := 0; i < 50; i++ {
 		wg.Add(1)
 		go func() {
 			c, err := p.Ping("127.0.0.1", 3, time.Now().Add(5000*time.Millisecond))

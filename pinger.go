@@ -14,6 +14,12 @@ import (
 
 const ProtocolICMP = 1
 
+type pingPkt struct {
+	Peer   net.Addr
+	Packet *icmp.Echo
+	Time   time.Time
+}
+
 type PingStats struct {
 	Latency  []time.Duration
 	Sent     int
@@ -103,11 +109,12 @@ func (e *EchoRequest) Send() {
 }
 
 type Pinger struct {
-	queue   map[string]chan *EchoResponse
-	m       sync.RWMutex
-	running bool
-	conn    *icmp.PacketConn
-	Debug   bool
+	queue      map[string]chan *EchoResponse
+	m          sync.RWMutex
+	running    bool
+	conn       *icmp.PacketConn
+	Debug      bool
+	packetChan chan *pingPkt
 }
 
 func NewPinger() *Pinger {
@@ -167,16 +174,19 @@ func (p *Pinger) start() {
 	}
 	p.conn = c
 	p.running = true
+	p.packetChan = make(chan *pingPkt, 1000)
 	go p.listenIpv4()
+	go p.processPkt()
 }
 
 func (p *Pinger) stop() {
-	p.conn.Close()
 	p.running = false
+	p.conn.Close()
 	if p.Debug {
 		log.Printf("Socket closed.")
 	}
 	p.conn = nil
+	close(p.packetChan)
 }
 
 func (p *Pinger) listenIpv4() {
@@ -185,7 +195,7 @@ func (p *Pinger) listenIpv4() {
 		n, peer, err := p.conn.ReadFrom(rb)
 		pktTime := time.Now()
 		if err != nil {
-			fmt.Println(err.Error())
+			log.Println(err.Error())
 			break
 		}
 		rm, err := icmp.ParseMessage(ProtocolICMP, rb[:n])
@@ -197,38 +207,12 @@ func (p *Pinger) listenIpv4() {
 			if p.Debug {
 				log.Printf("recieved Echo Reply from %s\n", peer.String())
 			}
-			body := rm.Body.(*icmp.Echo)
-			key := packetKey(peer.String(), body.ID, body.Seq)
-			p.m.RLock()
-			req, ok := p.queue[key]
-			p.m.RUnlock()
-			if ok {
-				//delete this packets key from the queue
-				p.m.Lock()
-				delete(p.queue, key)
-				p.m.Unlock()
-
-				if p.Debug {
-					log.Printf("reply packet matches request packet. %s - %d:%d\n", peer.String(), body.ID, body.Seq)
-				}
-
-				resp := &EchoResponse{
-					Peer:     peer.String(),
-					Id:       body.ID,
-					Seq:      body.Seq,
-					Received: pktTime,
-				}
-				req <- resp
+			p.packetChan <- &pingPkt{
+				Peer:   peer,
+				Packet: rm.Body.(*icmp.Echo),
+				Time:   pktTime,
 			}
 		}
-		// if we are not waiting for anymore packets, then we can close the socket.
-		p.m.Lock()
-		if len(p.queue) < 1 {
-			p.stop()
-			p.m.Unlock()
-			break
-		}
-		p.m.Unlock()
 	}
 	if p.Debug {
 		log.Printf("listen loop ended.")
@@ -239,6 +223,39 @@ func (p *Pinger) listenIpv4() {
 		p.start()
 	}
 	p.m.Unlock()
+}
+
+func (p *Pinger) processPkt() {
+	for pkt := range p.packetChan {
+		key := packetKey(pkt.Peer.String(), pkt.Packet.ID, pkt.Packet.Seq)
+		p.m.RLock()
+		req, ok := p.queue[key]
+		p.m.RUnlock()
+		if ok {
+			//delete this packets key from the queue
+			p.m.Lock()
+			delete(p.queue, key)
+			if len(p.queue) < 1 {
+				if p.Debug {
+					log.Printf("queue is empty, closing socket.")
+				}
+				p.stop()
+			}
+			p.m.Unlock()
+
+			if p.Debug {
+				log.Printf("reply packet matches request packet. %s - %d:%d\n", pkt.Peer.String(), pkt.Packet.ID, pkt.Packet.Seq)
+			}
+
+			resp := &EchoResponse{
+				Peer:     pkt.Peer.String(),
+				Id:       pkt.Packet.ID,
+				Seq:      pkt.Packet.Seq,
+				Received: pkt.Time,
+			}
+			req <- resp
+		}
+	}
 }
 
 func (p *Pinger) DeleteKey(key string) {
