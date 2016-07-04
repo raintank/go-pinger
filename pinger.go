@@ -190,12 +190,13 @@ func (p *Pinger) stop() {
 }
 
 func (p *Pinger) listenIpv4() {
+	rb := make([]byte, 1500)
+	var readErr error
 	for {
-		rb := make([]byte, 1500)
 		n, peer, err := p.conn.ReadFrom(rb)
 		pktTime := time.Now()
 		if err != nil {
-			log.Println(err.Error())
+			readErr = err
 			break
 		}
 		rm, err := icmp.ParseMessage(ProtocolICMP, rb[:n])
@@ -219,6 +220,7 @@ func (p *Pinger) listenIpv4() {
 	}
 	p.m.Lock()
 	if p.running {
+		log.Println(readErr.Error())
 		p.stop()
 		p.start()
 	}
