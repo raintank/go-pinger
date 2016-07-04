@@ -77,9 +77,6 @@ func TestPing(t *testing.T) {
 	if len(p.queue) != 0 {
 		t.Fatalf("queue should be empty")
 	}
-	if p.running {
-		t.Fatalf("socket should have been closed after the last outstanding ping was recieved.")
-	}
 	p.m.RUnlock()
 
 	if results.Sent != 3 {
@@ -131,15 +128,15 @@ func TestConcurrentPing(t *testing.T) {
 			results := <-c
 
 			if results.Sent != 3 {
-				t.Errorf("3 ping should have been sent")
+				t.Errorf("3 ping should have been sent, %d sent instead", results.Sent)
 			}
 
 			if results.Received != 3 {
-				t.Errorf("3 ping should have been recieved")
+				t.Errorf("3 ping should have been recieved, %d received instead", results.Received)
 			}
 
 			if len(results.Latency) != 3 {
-				t.Errorf("there should be 3 latency measurements.")
+				t.Errorf("there should be 3 latency measurements, %d results instead", len(results.Latency))
 			}
 
 			wg.Done()
@@ -150,9 +147,6 @@ func TestConcurrentPing(t *testing.T) {
 	p.m.RLock()
 	if len(p.queue) != 0 {
 		t.Fatalf("queue should be empty")
-	}
-	if p.running {
-		t.Fatalf("socket should have been closed after the last outstanding ping was recieved.")
 	}
 	p.m.RUnlock()
 }

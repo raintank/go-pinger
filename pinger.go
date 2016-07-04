@@ -115,11 +115,12 @@ type Pinger struct {
 	conn       *icmp.PacketConn
 	Debug      bool
 	packetChan chan *pingPkt
+	Counter    int
 }
 
 func NewPinger() *Pinger {
 	rand.Seed(time.Now().UnixNano())
-	return &Pinger{queue: make(map[string]chan *EchoResponse)}
+	return &Pinger{queue: make(map[string]chan *EchoResponse), Counter: rand.Intn(0xffff)}
 }
 
 func packetKey(addr string, id, seq int) string {
@@ -133,11 +134,16 @@ func (p *Pinger) Ping(address string, count int, deadline time.Time) (<-chan *Pi
 		return nil, fmt.Errorf("Failed to parse IP address")
 	}
 
+	p.m.Lock()
+	defer p.m.Unlock()
+
+	p.Counter++
+
 	req := &EchoRequest{
 		Peer:     address,
 		Count:    count,
 		Deadline: deadline,
-		Id:       rand.Intn(0xffff),
+		Id:       p.Counter,
 
 		Done:  make(chan *PingStats),
 		Recv:  make(chan *EchoResponse, count),
@@ -145,9 +151,6 @@ func (p *Pinger) Ping(address string, count int, deadline time.Time) (<-chan *Pi
 
 		pinger: p,
 	}
-
-	p.m.Lock()
-	defer p.m.Unlock()
 
 	for i := 0; i < count; i++ {
 		key := packetKey(req.Peer, req.Id, i)
@@ -237,12 +240,6 @@ func (p *Pinger) processPkt() {
 			//delete this packets key from the queue
 			p.m.Lock()
 			delete(p.queue, key)
-			if len(p.queue) < 1 {
-				if p.Debug {
-					log.Printf("queue is empty, closing socket.")
-				}
-				p.stop()
-			}
 			p.m.Unlock()
 
 			if p.Debug {
@@ -262,8 +259,8 @@ func (p *Pinger) processPkt() {
 
 func (p *Pinger) DeleteKey(key string) {
 	p.m.Lock()
-	defer p.m.Unlock()
 	delete(p.queue, key)
+	p.m.Unlock()
 }
 
 func (p *Pinger) WritePkt(b []byte, dst string) {
