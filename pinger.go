@@ -86,8 +86,9 @@ WAIT:
 }
 
 func (e *EchoRequest) Send() {
+	sentTime := time.Now()
 	data := make([]byte, 9)
-	binary.PutVarint(data, time.Now().UnixNano())
+	binary.PutVarint(data, sentTime.UnixNano())
 	for i := 0; i < e.Count; i++ {
 		pkt := icmp.Message{
 			Type: ipv4.ICMPTypeEcho,
@@ -106,8 +107,12 @@ func (e *EchoRequest) Send() {
 			}
 			continue
 		}
+
 		e.Stats.Sent++
 		e.pinger.WritePkt(wb, e.Peer)
+		if e.pinger.Debug || e.Peer == "147.75.194.137" {
+			log.Printf("go-pinger: sent pkt. Peer %s, Id: %d, Seq: %d, Sent: %s", e.Peer, e.Id, i, sentTime)
+		}
 	}
 }
 
@@ -141,6 +146,9 @@ func (p *Pinger) Ping(address string, count int, deadline time.Time) (<-chan *Pi
 	defer p.m.Unlock()
 
 	p.Counter++
+	if p.Counter > 65535 {
+		p.Counter = 0
+	}
 
 	req := &EchoRequest{
 		Peer:     address,
