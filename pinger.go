@@ -110,7 +110,7 @@ func (e *EchoRequest) Send() {
 
 		e.Stats.Sent++
 		e.pinger.WritePkt(wb, e.Peer)
-		if e.pinger.Debug || e.Peer == "147.75.194.137" {
+		if e.pinger.Debug {
 			log.Printf("go-pinger: sent pkt. Peer %s, Id: %d, Seq: %d, Sent: %s", e.Peer, e.Id, i, sentTime)
 		}
 	}
@@ -223,7 +223,7 @@ func (p *Pinger) listenIpv4() {
 		if rm.Type == ipv4.ICMPTypeEchoReply {
 			data = rm.Body.(*icmp.Echo).Data
 			if len(data) != 9 {
-				log.Printf("go-pinger: invalid data payload. Expected 8bytes got %d", len(data))
+				log.Printf("go-pinger: invalid data payload from %s. Expected 9bytes got %d", peer.String(), len(data))
 				continue
 			}
 			sentTime, err := binary.ReadVarint(bytes.NewReader(data))
@@ -238,7 +238,7 @@ func (p *Pinger) listenIpv4() {
 				Received: pktTime,
 				Sent:     time.Unix(0, sentTime),
 			}
-			if p.Debug || peer.String() == "147.75.194.137" {
+			if p.Debug {
 				log.Printf("go-pinger: recieved %s\n", pkt.String())
 			}
 			select {
@@ -278,7 +278,9 @@ func (p *Pinger) processPkt() {
 				log.Printf("go-pinger: droped echo response due to blocked response chan. %s", pkt.String())
 			}
 		} else {
-			log.Printf("go-pinger: unexpected echo response. %s\n", pkt.String())
+			if p.Debug {
+				log.Printf("go-pinger: unexpected echo response. %s\n", pkt.String())
+			}
 		}
 	}
 }
