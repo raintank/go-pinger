@@ -1,6 +1,8 @@
 package pinger
 
 import (
+	"bytes"
+	"encoding/binary"
 	"fmt"
 	"log"
 	"math/rand"
@@ -14,12 +16,6 @@ import (
 
 const ProtocolICMP = 1
 
-type pingPkt struct {
-	Peer   net.Addr
-	Packet *icmp.Echo
-	Time   time.Time
-}
-
 type PingStats struct {
 	Latency  []time.Duration
 	Sent     int
@@ -31,6 +27,7 @@ type EchoRequest struct {
 	Peer     string
 	Count    int
 	Deadline time.Time
+	Sent     time.Time
 	Id       int
 	Stats    *PingStats
 	Done     chan *PingStats
@@ -45,6 +42,11 @@ type EchoResponse struct {
 	Id       int
 	Seq      int
 	Received time.Time
+	Sent     time.Time
+}
+
+func (e *EchoResponse) String() string {
+	return fmt.Sprintf("Peer %s, Id: %d, Seq: %d, Sent: %s, Received: %s", e.Peer, e.Id, e.Seq, e.Sent, e.Received)
 }
 
 func (e *EchoRequest) Listen() {
@@ -56,10 +58,11 @@ WAIT:
 		select {
 		case <-timer.C:
 			// deadline reached.
+			log.Printf("go-pinger: deadline reached waiting for repsonse. Peer: %s, Id: %d", e.Peer, e.Id)
 			break WAIT
 		case resp := <-e.Recv:
 			e.m.Lock()
-			rtt := resp.Received.Sub(e.Stats.SentTime[resp.Seq])
+			rtt := resp.Received.Sub(resp.Sent)
 			e.Stats.Received++
 			e.Stats.Latency = append(e.Stats.Latency, rtt)
 			e.m.Unlock()
@@ -83,6 +86,8 @@ WAIT:
 }
 
 func (e *EchoRequest) Send() {
+	data := make([]byte, 9)
+	binary.PutVarint(data, time.Now().UnixNano())
 	for i := 0; i < e.Count; i++ {
 		pkt := icmp.Message{
 			Type: ipv4.ICMPTypeEcho,
@@ -90,9 +95,10 @@ func (e *EchoRequest) Send() {
 			Body: &icmp.Echo{
 				ID:   e.Id,
 				Seq:  i,
-				Data: []byte("raintank-Litmus"),
+				Data: data,
 			},
 		}
+
 		wb, err := pkt.Marshal(nil)
 		if err != nil {
 			if e.pinger.Debug {
@@ -100,10 +106,7 @@ func (e *EchoRequest) Send() {
 			}
 			continue
 		}
-		e.m.Lock()
-		e.Stats.SentTime[i] = time.Now()
 		e.Stats.Sent++
-		e.m.Unlock()
 		e.pinger.WritePkt(wb, e.Peer)
 	}
 }
@@ -114,7 +117,7 @@ type Pinger struct {
 	running    bool
 	conn       *icmp.PacketConn
 	Debug      bool
-	packetChan chan *pingPkt
+	packetChan chan EchoResponse
 	Counter    int
 }
 
@@ -177,12 +180,12 @@ func (p *Pinger) start() {
 	}
 	p.conn = c
 	p.running = true
-	p.packetChan = make(chan *pingPkt, 1000)
+	p.packetChan = make(chan EchoResponse, 10000)
 	go p.listenIpv4()
 	go p.processPkt()
 }
 
-func (p *Pinger) stop() {
+func (p *Pinger) Stop() {
 	p.running = false
 	p.conn.Close()
 	if p.Debug {
@@ -194,7 +197,9 @@ func (p *Pinger) stop() {
 
 func (p *Pinger) listenIpv4() {
 	rb := make([]byte, 1500)
+	pkt := EchoResponse{}
 	var readErr error
+	var data []byte
 	for {
 		n, peer, err := p.conn.ReadFrom(rb)
 		pktTime := time.Now()
@@ -208,14 +213,32 @@ func (p *Pinger) listenIpv4() {
 			continue
 		}
 		if rm.Type == ipv4.ICMPTypeEchoReply {
-			if p.Debug {
-				log.Printf("recieved Echo Reply from %s\n", peer.String())
+			data = rm.Body.(*icmp.Echo).Data
+			if len(data) != 9 {
+				log.Printf("go-pinger: invalid data payload. Expected 8bytes got %d", len(data))
+				continue
 			}
-			p.packetChan <- &pingPkt{
-				Peer:   peer,
-				Packet: rm.Body.(*icmp.Echo),
-				Time:   pktTime,
+			sentTime, err := binary.ReadVarint(bytes.NewReader(data))
+			if err != nil {
+				log.Printf("go-pinger: failed to marshal data to int64 number. %s", err.Error())
+				continue
 			}
+			pkt = EchoResponse{
+				Peer:     peer.String(),
+				Seq:      rm.Body.(*icmp.Echo).Seq,
+				Id:       rm.Body.(*icmp.Echo).ID,
+				Received: pktTime,
+				Sent:     time.Unix(0, sentTime),
+			}
+			if p.Debug || peer.String() == "147.75.194.137" {
+				log.Printf("go-pinger: recieved %s\n", pkt.String())
+			}
+			select {
+			case p.packetChan <- pkt:
+			default:
+				log.Printf("go-pinger: droped echo response due to blocked packetChan. %s\n", pkt.String())
+			}
+
 		}
 	}
 	if p.Debug {
@@ -224,7 +247,7 @@ func (p *Pinger) listenIpv4() {
 	p.m.Lock()
 	if p.running {
 		log.Println(readErr.Error())
-		p.stop()
+		p.Stop()
 		p.start()
 	}
 	p.m.Unlock()
@@ -232,27 +255,22 @@ func (p *Pinger) listenIpv4() {
 
 func (p *Pinger) processPkt() {
 	for pkt := range p.packetChan {
-		key := packetKey(pkt.Peer.String(), pkt.Packet.ID, pkt.Packet.Seq)
+		key := packetKey(pkt.Peer, pkt.Id, pkt.Seq)
 		p.m.RLock()
 		req, ok := p.queue[key]
+		delete(p.queue, key)
 		p.m.RUnlock()
 		if ok {
-			//delete this packets key from the queue
-			p.m.Lock()
-			delete(p.queue, key)
-			p.m.Unlock()
-
 			if p.Debug {
-				log.Printf("reply packet matches request packet. %s - %d:%d\n", pkt.Peer.String(), pkt.Packet.ID, pkt.Packet.Seq)
+				log.Printf("reply packet matches request packet. %s\n", pkt.String())
 			}
-
-			resp := &EchoResponse{
-				Peer:     pkt.Peer.String(),
-				Id:       pkt.Packet.ID,
-				Seq:      pkt.Packet.Seq,
-				Received: pkt.Time,
+			select {
+			case req <- &pkt:
+			default:
+				log.Printf("go-pinger: droped echo response due to blocked response chan. %s", pkt.String())
 			}
-			req <- resp
+		} else {
+			log.Printf("go-pinger: unexpected echo response. %s\n", pkt.String())
 		}
 	}
 }

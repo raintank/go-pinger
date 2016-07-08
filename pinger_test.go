@@ -42,7 +42,6 @@ func TestBadIP(t *testing.T) {
 	if err == nil {
 		t.Fatalf("Scheduling ping should have failed but it didnt.")
 	}
-
 }
 
 func TestPing(t *testing.T) {
@@ -90,6 +89,7 @@ func TestPing(t *testing.T) {
 	if len(results.Latency) != 3 {
 		t.Fatalf("there should be 3 latency measurements.")
 	}
+	p.Stop()
 }
 
 func TestConcurrentPing(t *testing.T) {
@@ -109,7 +109,7 @@ func TestConcurrentPing(t *testing.T) {
 	for i := 0; i < 50; i++ {
 		wg.Add(1)
 		go func() {
-			c, err := p.Ping("127.0.0.1", 3, time.Now().Add(5000*time.Millisecond))
+			c, err := p.Ping("127.0.0.1", 3, time.Now().Add(10*time.Second))
 			if err != nil {
 				t.Fatalf("failed to schedule ping")
 			}
@@ -149,4 +149,5 @@ func TestConcurrentPing(t *testing.T) {
 		t.Fatalf("queue should be empty")
 	}
 	p.m.RUnlock()
+	p.Stop()
 }
