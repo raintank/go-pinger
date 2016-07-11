@@ -38,7 +38,7 @@ func TestDeadline(t *testing.T) {
 func TestBadIP(t *testing.T) {
 	p := NewPinger()
 	p.running = true
-	_, err := p.Ping("127.0.1", 1, time.Now().Add(50*time.Millisecond))
+	_, err := p.Ping("127.0.1", 1, time.Now().Add(1*time.Second))
 	if err == nil {
 		t.Fatalf("Scheduling ping should have failed but it didnt.")
 	}
@@ -57,10 +57,11 @@ func TestPing(t *testing.T) {
 	}
 	p.m.RUnlock()
 
-	c, err := p.Ping("127.0.0.1", 3, time.Now().Add(50*time.Millisecond))
+	c, err := p.Ping("127.0.0.1", 3, time.Now().Add(1*time.Second))
 	if err != nil {
 		t.Fatalf("failed to schedule ping. %s", err)
 	}
+	defer p.Stop()
 
 	p.m.RLock()
 	if len(p.queue) != 3 {
@@ -89,12 +90,10 @@ func TestPing(t *testing.T) {
 	if len(results.Latency) != 3 {
 		t.Fatalf("there should be 3 latency measurements.")
 	}
-	p.Stop()
 }
 
 func TestConcurrentPing(t *testing.T) {
 	p := NewPinger()
-
 	p.m.RLock()
 	if len(p.queue) > 0 {
 		t.Fatalf("queue should be empty")
@@ -104,12 +103,13 @@ func TestConcurrentPing(t *testing.T) {
 		t.Fatalf("socket should not be active until the first ping is requested.")
 	}
 	p.m.RUnlock()
+	defer p.Stop()
 	var wg sync.WaitGroup
 
 	for i := 0; i < 50; i++ {
 		wg.Add(1)
 		go func() {
-			c, err := p.Ping("127.0.0.1", 3, time.Now().Add(10*time.Second))
+			c, err := p.Ping("127.0.0.1", 3, time.Now().Add(1*time.Second))
 			if err != nil {
 				t.Fatalf("failed to schedule ping")
 			}
@@ -149,5 +149,4 @@ func TestConcurrentPing(t *testing.T) {
 		t.Fatalf("queue should be empty")
 	}
 	p.m.RUnlock()
-	p.Stop()
 }
