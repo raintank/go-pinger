@@ -56,7 +56,7 @@ WAIT:
 		select {
 		case <-timer.C:
 			// deadline reached.
-			log.Printf("go-pinger: deadline reached waiting for repsonse. Peer: %s, Id: %d", e.Peer, e.Id)
+			// log.Printf("go-pinger: deadline reached waiting for repsonse. Peer: %s, Id: %d", e.Peer, e.Id)
 			break WAIT
 		case resp := <-e.Recv:
 			e.m.Lock()
