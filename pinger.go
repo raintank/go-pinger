@@ -6,320 +6,223 @@ import (
 	"math/rand"
 	"net"
 	"sync"
-	"syscall"
 	"time"
-	"unsafe"
 
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
+	"golang.org/x/net/ipv6"
 )
-
-const ProtocolICMP = 1
 
 type PingStats struct {
 	Latency  []time.Duration
 	Sent     int
 	Received int
-	SentTime map[int]time.Time
 }
 
-type EchoRequest struct {
-	Peer     string
-	Count    int
-	Deadline time.Time
-	Id       int
-	Stats    *PingStats
-	Done     chan *PingStats
-	Recv     chan *EchoResponse
-
-	m      sync.RWMutex
-	pinger *Pinger
-}
-
-type EchoResponse struct {
-	Peer     string
-	Id       int
-	Seq      int
-	Received time.Time
-}
-
-func (e *EchoResponse) String() string {
-	return fmt.Sprintf("Peer %s, Id: %d, Seq: %d, Recv: %s", e.Peer, e.Id, e.Seq, e.Received)
-}
-
-func (e *EchoRequest) Listen() {
-	seqRecv := make(map[int]bool)
-
-	timer := time.NewTimer(e.Deadline.Sub(time.Now()))
-WAIT:
-	for {
-		select {
-		case <-timer.C:
-			// deadline reached.
-			// log.Printf("go-pinger: deadline reached waiting for repsonse. Peer: %s, Id: %d", e.Peer, e.Id)
-			break WAIT
-		case resp := <-e.Recv:
-			e.m.Lock()
-			rtt := resp.Received.Sub(e.Stats.SentTime[resp.Seq])
-			if rtt < 0 {
-				rtt = 1
-			}
-			e.Stats.Received++
-			e.Stats.Latency = append(e.Stats.Latency, rtt)
-			e.m.Unlock()
-
-			seqRecv[resp.Seq] = true
-			// we have recieved responses for all pings sent.
-			if e.Stats.Received >= e.Stats.Sent {
-				break WAIT
-			}
-		}
-	}
-	timer.Stop()
-	for i := 0; i < e.Count; i++ {
-		if _, ok := seqRecv[i]; !ok {
-			key := packetKey(e.Peer, e.Id, i)
-			e.pinger.DeleteKey(key)
-		}
-	}
-
-	e.Done <- e.Stats
-}
-
-func (e *EchoRequest) Send() {
-	for i := 0; i < e.Count; i++ {
-		pkt := icmp.Message{
-			Type: ipv4.ICMPTypeEcho,
-			Code: 0,
-			Body: &icmp.Echo{
-				ID:   e.Id,
-				Seq:  i,
-				Data: []byte("raintank/go-pinger"),
-			},
-		}
-		wb, err := pkt.Marshal(nil)
-		if err != nil {
-			if e.pinger.Debug {
-				log.Printf("failed to marshal ICMP Echo packet. %s", err)
-			}
-			continue
-		}
-		sentTime, err := e.pinger.WritePkt(wb, e.Peer)
-		if err == nil {
-			e.Stats.Sent++
-			e.Stats.SentTime[i] = sentTime
-			if e.pinger.Debug {
-				log.Printf("go-pinger: sent pkt. Peer %s, Id: %d, Seq: %d, Sent: %s", e.Peer, e.Id, i, sentTime)
-			}
-		}
-	}
-	e.Listen()
-}
-
+/*
+	A Pinger allows you to send ICMP echo requests to a large number of
+	destinations concurrently.
+*/
 type Pinger struct {
-	queue      map[string]chan *EchoResponse
-	m          sync.RWMutex
-	running    bool
-	conn       net.PacketConn
-	Debug      bool
-	packetChan chan EchoResponse
-	Counter    int
+	inFlight    map[string]*EchoRequest
+	v4Conn      net.PacketConn
+	v6Conn      net.PacketConn
+	packetChan  chan *EchoResponse
+	requestChan chan *EchoRequest
+	Counter     int
+	proto       string
+	processWg   *sync.WaitGroup
+	Debug       bool
+	shutdown    bool
+
+	sync.RWMutex
 }
 
-func NewPinger() *Pinger {
+/*
+	Creates a new Pinger instance.  Accepts the IP protocol to use "ipv4", "ipv6" or "all" and
+	the number of packets to buffer in the request and response packet channels.
+	The pinger instance will immediately start listening on the raw sockets (ipv4:icmp, ipv6:ipv6-icmp or both).
+*/
+func NewPinger(protocol string, bufferSize int) (*Pinger, error) {
 	rand.Seed(time.Now().UnixNano())
-	return &Pinger{queue: make(map[string]chan *EchoResponse), Counter: rand.Intn(0xffff)}
+
+	p := &Pinger{
+		inFlight:    make(map[string]*EchoRequest),
+		Counter:     rand.Intn(0xffff),
+		proto:       protocol,
+		packetChan:  make(chan *EchoResponse, bufferSize),
+		requestChan: make(chan *EchoRequest, bufferSize),
+		processWg:   new(sync.WaitGroup),
+	}
+	var err error
+	switch protocol {
+	case "ipv4":
+		p.v4Conn, err = net.ListenPacket("ip4:icmp", "0.0.0.0")
+		if err != nil {
+			return nil, err
+		}
+	case "ipv6":
+		p.v6Conn, err = net.ListenPacket("ip6:ipv6-icmp", "::")
+		if err != nil {
+			return nil, err
+		}
+	case "all":
+		p.v4Conn, err = net.ListenPacket("ip4:icmp", "0.0.0.0")
+		if err != nil {
+			return nil, err
+		}
+		p.v6Conn, err = net.ListenPacket("ip6:ipv6-icmp", "::")
+		if err != nil {
+			return nil, err
+		}
+	default:
+		return nil, fmt.Errorf("invalid protocol, must be ipv4 or ipv6")
+	}
+
+	return p, nil
+
 }
 
-func packetKey(addr string, id, seq int) string {
-	return fmt.Sprintf("%s-%d-%d", addr, id, seq)
-}
-
-func (p *Pinger) Ping(address string, count int, deadline time.Time) (<-chan *PingStats, error) {
-	// ensuire the IP address is valid.
-	ipAddr := net.ParseIP(address)
-	if ipAddr == nil {
-		return nil, fmt.Errorf("Failed to parse IP address")
+func (p *Pinger) Start() {
+	if p.proto == "all" || p.proto == "ipv4" {
+		go p.v4PacketReader()
 	}
-
-	p.m.Lock()
-	defer p.m.Unlock()
-
-	p.Counter++
-	if p.Counter > 65535 {
-		p.Counter = 0
+	if p.proto == "all" || p.proto == "ipv6" {
+		go p.v6PacketReader()
 	}
-
-	req := &EchoRequest{
-		Peer:     address,
-		Count:    count,
-		Deadline: deadline,
-		Id:       p.Counter,
-
-		Done:  make(chan *PingStats),
-		Recv:  make(chan *EchoResponse, count),
-		Stats: &PingStats{Latency: make([]time.Duration, 0), SentTime: make(map[int]time.Time)},
-
-		pinger: p,
-	}
-
-	for i := 0; i < count; i++ {
-		key := packetKey(req.Peer, req.Id, i)
-		p.queue[key] = req.Recv
-	}
-
-	if !p.running {
-		log.Println("First ping, creating raw Socket.\n")
-		p.start()
-	}
-
-	go req.Send()
-
-	return req.Done, nil
-}
-
-func (p *Pinger) start() {
-	c, err := net.ListenPacket("ip4:icmp", "0.0.0.0")
-	if err != nil {
-		panic(err)
-	}
-	if p.Debug {
-		log.Printf("Listening on socket for icmp packets.")
-	}
-	if c == nil {
-		panic("packetConn is nil\n")
-	}
-	p.conn = c
-	p.running = true
-	p.packetChan = make(chan EchoResponse, 10000)
-	go p.listenIpv4()
+	p.processWg.Add(1)
 	go p.processPkt()
 }
 
 func (p *Pinger) Stop() {
-	p.running = false
-	p.conn.Close()
-	if p.Debug {
-		log.Printf("Socket closed.")
+	p.Lock()
+	p.shutdown = true
+	p.Unlock()
+	if p.v4Conn != nil {
+		p.v4Conn.Close()
 	}
-	p.conn = nil
+	if p.v6Conn != nil {
+		p.v6Conn.Close()
+	}
 	close(p.packetChan)
+	p.processWg.Wait()
 }
 
-func (p *Pinger) listenIpv4() {
-	if p.conn == nil {
-		panic("conn doesnt exist")
+/* Send <count> icmp echo rquests to <address> and don't wait longer then <timeout> for a response.
+ An error will be returned if the EchoRequests cant be sent.
+ This call will block until all icmp EchoResponses are received or timeout is reached. It is safe
+ to run this function in a separate goroutine.
+ ```
+ statsCh := make(chan *pinger.PingStats)
+ errCh := make(chan error)
+ go func() {
+ 	stats, err := p.Ping(address, count, timeout)
+ 	if err != nil {
+		errCh <- err
+ 	} else {
+		statsCh <- resp
+ 	}
+ }()
+ var stats *pinger.Stats
+ var err error
+ select {
+ case stats = <- statsCh:
+ case err = <- errCh:
+ }
+ ```
+*/
+func (p *Pinger) Ping(address net.IP, count int, timeout time.Duration) (*PingStats, error) {
+	p.Lock()
+	p.Counter++
+	if p.Counter > 65535 {
+		p.Counter = 0
 	}
-	log.Printf("starting rawSocket listener\n")
-	rb := make([]byte, 1500)
-	pkt := EchoResponse{}
-	var readErr error
-	var data []byte
-	ipconn, ok := p.conn.(*net.IPConn)
-	if !ok {
-		panic("connection is not IPConn")
-	}
-	file, err := ipconn.File()
-	if err != nil {
-		panic(err.Error())
-	}
-	defer file.Close()
-	fd := file.Fd()
+	supportedProto := p.proto
+	counter := p.Counter
+	p.Unlock()
 
-	var pktTime time.Time
-	recvTime := syscall.Timeval{}
-	for {
-		if p.conn == nil {
-			break
+	var proto icmp.Type
+	proto = ipv4.ICMPTypeEcho
+	if address.To4() == nil {
+		proto = ipv6.ICMPTypeEchoRequest
+	}
+
+	if proto == ipv4.ICMPTypeEcho && supportedProto == "ipv6" {
+		return nil, fmt.Errorf("This pinger instances does not support ipv4")
+	}
+	if proto == ipv6.ICMPTypeEchoRequest && supportedProto == "ipv4" {
+		return nil, fmt.Errorf("This pinger instances does not support ipv6")
+	}
+
+	pingTest := make([]*EchoRequest, count)
+	wg := new(sync.WaitGroup)
+
+	p.Lock()
+	for i := 0; i < count; i++ {
+		wg.Add(1)
+		pkt := icmp.Message{
+			Type: proto,
+			Code: 0,
+			Body: &icmp.Echo{
+				ID:   counter,
+				Seq:  i,
+				Data: []byte("raintank/go-pinger"),
+			},
 		}
-		n, peer, err := p.conn.ReadFrom(rb)
+
+		req := NewEchoRequest(pkt, address, wg)
+		pingTest[i] = req
+
+		// record our packet in the inFlight queue
+		p.inFlight[req.ID] = req
+	}
+	p.Unlock()
+
+	for _, req := range pingTest {
+		err := p.Send(req)
 		if err != nil {
-			readErr = err
-			break
+			// cleanup requests from inFlightQueue
+			p.Lock()
+			for _, r := range pingTest {
+				delete(p.inFlight, r.ID)
+			}
+			p.Unlock()
+			return nil, err
 		}
-		_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), uintptr(syscall.SIOCGSTAMP), uintptr(unsafe.Pointer(&recvTime)))
-		err = nil
-		if errno != 0 {
-			err = errno
-		}
-		if err == nil {
-			pktTime = time.Unix(0, recvTime.Nano())
-		} else {
-			pktTime = time.Now()
-		}
+	}
 
-		rm, err := icmp.ParseMessage(ProtocolICMP, rb[:n])
-		if err != nil {
-			fmt.Println(err.Error())
-			continue
-		}
-		if rm.Type == ipv4.ICMPTypeEchoReply {
-			data = rm.Body.(*icmp.Echo).Data
-			if len(data) < 9 {
-				log.Printf("go-pinger: invalid data payload from %s. Expected at least 9bytes got %d", peer.String(), len(data))
-				continue
-			}
-			pkt = EchoResponse{
-				Peer:     peer.String(),
-				Seq:      rm.Body.(*icmp.Echo).Seq,
-				Id:       rm.Body.(*icmp.Echo).ID,
-				Received: pktTime,
-			}
-			if p.Debug {
-				log.Printf("go-pinger: recieved pkt. %s\n", pkt.String())
-			}
-			select {
-			case p.packetChan <- pkt:
-			default:
-				log.Printf("go-pinger: droped echo response due to blocked packetChan. %s\n", pkt.String())
-			}
-		}
-	}
-	if p.Debug {
-		log.Printf("listen loop ended.")
-	}
-	p.m.Lock()
-	if p.running {
-		log.Println(readErr.Error())
-		p.Stop()
-		p.start()
-	}
-	p.m.Unlock()
-}
+	// wait for all packets to be received
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
 
-func (p *Pinger) processPkt() {
-	for pkt := range p.packetChan {
-		key := packetKey(pkt.Peer, pkt.Id, pkt.Seq)
-		p.m.RLock()
-		req, ok := p.queue[key]
-		delete(p.queue, key)
-		p.m.RUnlock()
-		if ok {
-			if p.Debug {
-				log.Printf("reply packet matches request packet. %s\n", pkt.String())
-			}
-			select {
-			case req <- &pkt:
-			default:
-				log.Printf("go-pinger: droped echo response due to blocked response chan. %s", pkt.String())
-			}
-		} else {
-			if p.Debug {
-				log.Printf("go-pinger: unexpected echo response. %s\n", pkt.String())
-			}
+	// wait for all packets to be recieved for for timeout.
+	select {
+	case <-done:
+		if p.Debug {
+			log.Printf("go-pinger: all pings are complete")
+		}
+	case <-time.After(timeout):
+		if p.Debug {
+			log.Printf("go-pinger: timeout reached")
+		}
+		p.Lock()
+		for _, req := range pingTest {
+			delete(p.inFlight, req.ID)
+		}
+		p.Unlock()
+	}
+
+	// calculate our timing stats.
+	stats := new(PingStats)
+	for _, req := range pingTest {
+		stats.Sent++
+		if !req.Received.IsZero() {
+			stats.Received++
+			stats.Latency = append(stats.Latency, req.Received.Sub(req.Sent))
 		}
 	}
-}
-
-func (p *Pinger) DeleteKey(key string) {
-	p.m.Lock()
-	delete(p.queue, key)
-	p.m.Unlock()
-}
-
-func (p *Pinger) WritePkt(b []byte, dst string) (time.Time, error) {
-	if _, err := p.conn.WriteTo(b, &net.IPAddr{IP: net.ParseIP(dst)}); err != nil {
-		return time.Now(), err
-	}
-	return time.Now(), nil
+	return stats, nil
 }

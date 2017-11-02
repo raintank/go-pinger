@@ -1,152 +1,119 @@
 package pinger
 
 import (
+	"net"
 	"sync"
 	"testing"
 	"time"
 )
 
-func TestDeadline(t *testing.T) {
-	pre := time.Now()
-	request := &EchoRequest{
-		Peer:     "127.0.0.1",
-		Count:    5,
-		Deadline: time.Now().Add(time.Second),
-		Id:       1,
-		Stats:    &PingStats{Latency: make([]time.Duration, 0), SentTime: make(map[int]time.Time)},
-		Done:     make(chan *PingStats),
-		Recv:     make(chan *EchoResponse),
-		pinger:   NewPinger(),
-	}
+var localhost = net.ParseIP("127.0.0.1")
 
-	go request.Listen()
-
-	results := <-request.Done
-
-	duration := time.Since(pre) / time.Millisecond
-	if duration != 1000 {
-		t.Fatalf("result should have been sent after 1000ms. Waited %d", duration)
-	}
-	if results.Sent != 0 {
-		t.Fatalf("Sent counter should be 0")
-	}
-	if results.Received != 0 {
-		t.Fatalf("Received counter should be 0")
-	}
-}
-
-func TestBadIP(t *testing.T) {
-	p := NewPinger()
-	p.running = true
-	_, err := p.Ping("127.0.1", 1, time.Now().Add(1*time.Second))
+func TestBadProto(t *testing.T) {
+	_, err := NewPinger("foo", 100)
 	if err == nil {
-		t.Fatalf("Scheduling ping should have failed but it didnt.")
+		t.Fatalf("pinger should have failed to initialize")
 	}
 }
 
 func TestPing(t *testing.T) {
-	p := NewPinger()
-	p.Debug = true
-	p.m.RLock()
-	if len(p.queue) > 0 {
-		t.Fatalf("queue should be empty")
-	}
-
-	if p.running {
-		t.Fatalf("socket should not be active until the first ping is requested.")
-	}
-	p.m.RUnlock()
-
-	c, err := p.Ping("127.0.0.1", 3, time.Now().Add(1*time.Second))
+	p, err := NewPinger("all", 100)
 	if err != nil {
-		t.Fatalf("failed to schedule ping. %s", err)
+		t.Fatalf("failed to initialize pinger. %s", err)
 	}
+	p.Start()
 	defer p.Stop()
 
-	p.m.RLock()
-	if len(p.queue) != 3 {
-		t.Fatalf("queue should have 3 items. found %d", len(p.queue))
-	}
-	if !p.running {
-		t.Fatalf("socket should be active as there are pings to listen for.")
-	}
-	p.m.RUnlock()
-
-	results := <-c
-	p.m.RLock()
-	if len(p.queue) != 0 {
-		t.Fatalf("queue should be empty")
-	}
-	p.m.RUnlock()
-
-	if results.Sent != 3 {
-		t.Fatalf("3 ping should have been sent")
+	p.Debug = true
+	p.RLock()
+	if len(p.inFlight) > 0 {
+		t.Fatalf("inFlight should be empty")
 	}
 
-	if results.Received != 3 {
-		t.Fatalf("3 ping should have been recieved")
+	p.RUnlock()
+	type resp struct {
+		stats *PingStats
+		err   error
+	}
+	respChan := make(chan resp, 10)
+	go func() {
+		stats, err := p.Ping(localhost, 3, time.Second)
+		respChan <- resp{stats, err}
+	}()
+
+	results := <-respChan
+
+	if results.err != nil {
+		t.Fatalf("pings were not sent. %s", results.err)
+	}
+	p.RLock()
+	if len(p.inFlight) != 0 {
+		t.Fatalf("inFlight should be empty")
+	}
+	p.RUnlock()
+
+	if results.stats.Sent != 3 {
+		t.Fatalf("3 ping should have been sent. %d were sent instead", results.stats.Sent)
 	}
 
-	if len(results.Latency) != 3 {
-		t.Fatalf("there should be 3 latency measurements.")
+	if results.stats.Received != 3 {
+		t.Fatalf("3 ping should have been recieved. %d were reveived instead", results.stats.Received)
+	}
+
+	if len(results.stats.Latency) != 3 {
+		t.Fatalf("there should be 3 latency measurements. Found %d instead", len(results.stats.Latency))
 	}
 }
 
 func TestConcurrentPing(t *testing.T) {
-	p := NewPinger()
-	p.m.RLock()
-	if len(p.queue) > 0 {
-		t.Fatalf("queue should be empty")
+	p, err := NewPinger("all", 100)
+	if err != nil {
+		t.Fatalf("failed to initialize pinger. %s", err)
 	}
-
-	if p.running {
-		t.Fatalf("socket should not be active until the first ping is requested.")
+	p.Start()
+	p.RLock()
+	if len(p.inFlight) > 0 {
+		t.Fatalf("inFlight should be empty")
 	}
-	p.m.RUnlock()
+	p.RUnlock()
 	defer p.Stop()
 	var wg sync.WaitGroup
+	type resp struct {
+		stats *PingStats
+		err   error
+	}
+	respChan := make(chan resp, 50)
 
 	for i := 0; i < 50; i++ {
 		wg.Add(1)
 		go func() {
-			c, err := p.Ping("127.0.0.1", 3, time.Now().Add(1*time.Second))
-			if err != nil {
-				t.Fatalf("failed to schedule ping")
-			}
-
-			p.m.RLock()
-			if len(p.queue) < 3 {
-				t.Errorf("queue should have 3 items. found %d", len(p.queue))
-			}
-
-			if !p.running {
-				t.Errorf("socket should be active as there are pings to listen for.")
-
-			}
-			p.m.RUnlock()
-
-			results := <-c
-
-			if results.Sent != 3 {
-				t.Errorf("3 ping should have been sent, %d sent instead", results.Sent)
-			}
-
-			if results.Received != 3 {
-				t.Errorf("3 ping should have been recieved, %d received instead", results.Received)
-			}
-
-			if len(results.Latency) != 3 {
-				t.Errorf("there should be 3 latency measurements, %d results instead", len(results.Latency))
-			}
-
+			stats, err := p.Ping(localhost, 3, time.Second)
+			respChan <- resp{stats, err}
 			wg.Done()
 		}()
 	}
 	wg.Wait()
+	close(respChan)
 
-	p.m.RLock()
-	if len(p.queue) != 0 {
-		t.Fatalf("queue should be empty")
+	p.RLock()
+	if len(p.inFlight) != 0 {
+		t.Fatalf("inFlight should be empty")
 	}
-	p.m.RUnlock()
+	p.RUnlock()
+	for results := range respChan {
+		if results.err != nil {
+			t.Fatalf("pings were not sent. %s", results.err)
+		}
+		if results.stats.Sent != 3 {
+			t.Fatalf("3 ping should have been sent. %d were sent instead", results.stats.Sent)
+		}
+
+		if results.stats.Received != 3 {
+			t.Fatalf("3 ping should have been recieved. %d were reveived instead", results.stats.Received)
+		}
+
+		if len(results.stats.Latency) != 3 {
+			t.Fatalf("there should be 3 latency measurements. Found %d instead", len(results.stats.Latency))
+		}
+	}
 }
