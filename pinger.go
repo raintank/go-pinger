@@ -179,6 +179,9 @@ func (p *Pinger) Ping(address net.IP, count int, timeout time.Duration) (*PingSt
 	p.Unlock()
 
 	for _, req := range pingTest {
+		if p.Debug {
+			log.Printf("go-pinger: sending packet. Peer %s, Id: %d, Seq: %d, Sent: %s", address.String(), req.Body.(*icmp.Echo).ID, req.Body.(*icmp.Echo).Seq, time.Now().String())
+		}
 		err := p.Send(req)
 		if err != nil {
 			// cleanup requests from inFlightQueue
@@ -202,11 +205,11 @@ func (p *Pinger) Ping(address net.IP, count int, timeout time.Duration) (*PingSt
 	select {
 	case <-done:
 		if p.Debug {
-			log.Printf("go-pinger: all pings are complete")
+			log.Printf("go-pinger: all pings set to %s were received", address.String())
 		}
 	case <-time.After(timeout):
 		if p.Debug {
-			log.Printf("go-pinger: timeout reached")
+			log.Printf("go-pinger: timeout reached sending to %s", address.String())
 		}
 		p.Lock()
 		for _, req := range pingTest {
