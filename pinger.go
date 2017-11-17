@@ -1,3 +1,11 @@
+/*
+	Package pinger provides a service for sending ICMP echo requests to numerous hosts in parallel.
+	The results from each "Ping" issued can used to calculate min,max,avg and stdev latency and % loss.
+
+	A process should only create 1 pinger service which can be shared across multiple goroutines.
+
+	see github.com/raintank/go-pinger/ping-all for an example of how to use the service.
+*/
 package pinger
 
 import (
@@ -13,6 +21,11 @@ import (
 	"golang.org/x/net/ipv6"
 )
 
+/*
+	PingStats are the results from sending ICMP echo requests to a host.
+	The stats include the number of packets sent and received and the latency
+	for every packet received.
+*/
 type PingStats struct {
 	Latency  []time.Duration
 	Sent     int
@@ -20,8 +33,7 @@ type PingStats struct {
 }
 
 /*
-	A Pinger allows you to send ICMP echo requests to a large number of
-	destinations concurrently.
+	Pinger represents a service that can be used for sending IMCP pings to hosts.
 */
 type Pinger struct {
 	inFlight    map[string]*EchoRequest
@@ -39,7 +51,7 @@ type Pinger struct {
 }
 
 /*
-	Creates a new Pinger instance.  Accepts the IP protocol to use "ipv4", "ipv6" or "all" and
+	Creates a new Pinger service.  Accepts the IP protocol to use "ipv4", "ipv6" or "all" and
 	the number of packets to buffer in the request and response packet channels.
 	The pinger instance will immediately start listening on the raw sockets (ipv4:icmp, ipv6:ipv6-icmp or both).
 */
@@ -83,6 +95,9 @@ func NewPinger(protocol string, bufferSize int) (*Pinger, error) {
 
 }
 
+/*
+	Start launches goroutines for processing packets received on the raw sockets
+*/
 func (p *Pinger) Start() {
 	if p.proto == "all" || p.proto == "ipv4" {
 		go p.v4PacketReader()
@@ -94,6 +109,10 @@ func (p *Pinger) Start() {
 	go p.processPkt()
 }
 
+/*
+	Stop shuts down the pinger service and closes the raw sockets. This method will block
+	until all spawned goroutines have ended.
+*/
 func (p *Pinger) Stop() {
 	p.Lock()
 	p.shutdown = true
@@ -108,31 +127,18 @@ func (p *Pinger) Stop() {
 	p.processWg.Wait()
 }
 
-/* Send <count> icmp echo rquests to <address> and don't wait longer then <timeout> for a response.
+/*
+ Send <count> icmp echo rquests to <address> and don't wait longer then <timeout> for a response.
  An error will be returned if the EchoRequests cant be sent.
  This call will block until all icmp EchoResponses are received or timeout is reached. It is safe
- to run this function in a separate goroutine.
- ```
- statsCh := make(chan *pinger.PingStats)
- errCh := make(chan error)
- go func() {
- 	stats, err := p.Ping(address, count, timeout)
- 	if err != nil {
-		errCh <- err
- 	} else {
-		statsCh <- resp
- 	}
- }()
- var stats *pinger.Stats
- var err error
- select {
- case stats = <- statsCh:
- case err = <- errCh:
- }
- ```
+ to call this method concurrently.
 */
 func (p *Pinger) Ping(address net.IP, count int, timeout time.Duration) (*PingStats, error) {
 	p.Lock()
+	if p.shutdown {
+		p.Unlock()
+		return nil, fmt.Errorf("Pinger service is shutdown.")
+	}
 	p.Counter++
 	if p.Counter > 65535 {
 		p.Counter = 0
