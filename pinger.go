@@ -201,7 +201,7 @@ func (p *Pinger) Ping(address net.IP, count int, timeout time.Duration) (*PingSt
 		close(done)
 	}()
 
-	// wait for all packets to be recieved for for timeout.
+	// wait for all packets to be recieved or for timeout.
 	select {
 	case <-done:
 		if p.Debug {
@@ -213,7 +213,13 @@ func (p *Pinger) Ping(address net.IP, count int, timeout time.Duration) (*PingSt
 		}
 		p.Lock()
 		for _, req := range pingTest {
-			delete(p.inFlight, req.ID)
+			_, ok := p.inFlight[req.ID]
+			if ok {
+				delete(p.inFlight, req.ID)
+				// we never received a response.  To prevent leaking goroutines we need to
+				// ensure our waitgroup reaches 0.
+				req.WaitGroup.Done()
+			}
 		}
 		p.Unlock()
 	}
@@ -225,6 +231,8 @@ func (p *Pinger) Ping(address net.IP, count int, timeout time.Duration) (*PingSt
 		if !req.Received.IsZero() {
 			stats.Received++
 			stats.Latency = append(stats.Latency, req.Received.Sub(req.Sent))
+		} else {
+
 		}
 	}
 	return stats, nil

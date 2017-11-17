@@ -197,7 +197,6 @@ func (p *Pinger) processPkt() {
 		if ok {
 			delete(p.inFlight, key)
 		}
-		p.Unlock()
 		if ok {
 			if p.Debug {
 				log.Printf("go-pinger: reply packet matches request packet. %s\n", pkt.String())
@@ -209,5 +208,6 @@ func (p *Pinger) processPkt() {
 				log.Printf("go-pinger: go-pinger: unexpected echo response. %s\n", pkt.String())
 			}
 		}
+		p.Unlock()
 	}
 }
