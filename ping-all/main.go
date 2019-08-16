@@ -47,9 +47,11 @@ func main() {
 	p.Start()
 
 	ticker := time.NewTicker(interval)
+	for _, host := range hosts {
+		go ping(host)
+	}
 	for range ticker.C {
 		for _, host := range hosts {
-			log.Printf("pinging %s", host)
 			go ping(host)
 		}
 	}
@@ -86,7 +88,7 @@ func ping(host string) {
 		log.Println(err)
 		return
 	}
-	stats, err := p.Ping(addr, count, timeout)
+	stats, err := p.Ping(net.ParseIP(addr), count, timeout)
 	if err != nil {
 		log.Println(err)
 		return
