@@ -1,7 +1,7 @@
 # go-pinger
 Go library for perform ICMP ping checks to 1 or more destination addresses.
 
-This "pinger" service is designed to support pinging 1000's of hotss concurrently and is used
+This "pinger" service is designed to support pinging 1000's of hosts concurrently and is used
 in the monitoring probes for the [worldPing](https://grafana.com/cloud/worldping) service run
 by Grafana Labs.
 
