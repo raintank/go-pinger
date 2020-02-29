@@ -57,7 +57,7 @@ func TestPing(t *testing.T) {
 	}
 
 	if results.stats.Received != 3 {
-		t.Fatalf("3 ping should have been recieved. %d were reveived instead", results.stats.Received)
+		t.Fatalf("3 ping should have been received. %d were received instead", results.stats.Received)
 	}
 
 	if len(results.stats.Latency) != 3 {
@@ -109,7 +109,7 @@ func TestConcurrentPing(t *testing.T) {
 		}
 
 		if results.stats.Received != 3 {
-			t.Fatalf("3 ping should have been recieved. %d were reveived instead", results.stats.Received)
+			t.Fatalf("3 ping should have been received. %d were received instead", results.stats.Received)
 		}
 
 		if len(results.stats.Latency) != 3 {

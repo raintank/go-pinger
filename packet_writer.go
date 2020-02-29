@@ -10,7 +10,7 @@ import (
 )
 
 // An EchoRequest is a single ICMP echo request packet that will be sent.
-// When the echoResponse is recieved, the "Received" field will be set and
+// When the echoResponse is received, the "Received" field will be set and
 // the Done() will be called on the WaitGroup.
 //
 type EchoRequest struct {

@@ -139,7 +139,7 @@ func (p *Pinger) Stop() {
 }
 
 /*
- Send <count> icmp echo rquests to <address> and don't wait longer then <timeout> for a response.
+ Send <count> icmp echo requests to <address> and don't wait longer then <timeout> for a response.
  An error will be returned if the EchoRequests cant be sent.
  This call will block until all icmp EchoResponses are received or timeout is reached. It is safe
  to call this method concurrently.
@@ -218,7 +218,7 @@ func (p *Pinger) Ping(address net.IP, count int, timeout time.Duration) (*PingSt
 		close(done)
 	}()
 
-	// wait for all packets to be recieved or for timeout.
+	// wait for all packets to be received or for timeout.
 	select {
 	case <-done:
 		if p.Debug {
