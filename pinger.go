@@ -148,7 +148,7 @@ func (p *Pinger) Ping(address net.IP, count int, timeout time.Duration) (*PingSt
 	p.Lock()
 	if p.shutdown {
 		p.Unlock()
-		return nil, fmt.Errorf("Pinger service is shutdown.")
+		return nil, fmt.Errorf("Pinger service is shutdown")
 	}
 	p.Counter++
 	if p.Counter > 65535 {
