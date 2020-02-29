@@ -95,7 +95,7 @@ func (p *Pinger) v6PacketReader() {
 				continue
 			}
 			if p.Debug {
-				log.Printf("go-pinger: recieved pkt. Peer %s, Id: %d, Seq: %d, Recv: %s\n", peer.String(), rm.Body.(*icmp.Echo).ID, rm.Body.(*icmp.Echo).Seq, pktTime.String())
+				log.Printf("go-pinger: received pkt. Peer %s, Id: %d, Seq: %d, Recv: %s\n", peer.String(), rm.Body.(*icmp.Echo).ID, rm.Body.(*icmp.Echo).Seq, pktTime.String())
 			}
 
 			// this goroutine needs to read packets from the network as fast as possible so we can get accurate timing information.
@@ -169,7 +169,7 @@ func (p *Pinger) v4PacketReader() {
 				continue
 			}
 			if p.Debug {
-				log.Printf("go-pinger: recieved pkt. Peer %s, Id: %d, Seq: %d, Recv: %s\n", peer.String(), rm.Body.(*icmp.Echo).ID, rm.Body.(*icmp.Echo).Seq, pktTime.String())
+				log.Printf("go-pinger: received pkt. Peer %s, Id: %d, Seq: %d, Recv: %s\n", peer.String(), rm.Body.(*icmp.Echo).ID, rm.Body.(*icmp.Echo).Seq, pktTime.String())
 			}
 
 			// this goroutine needs to read packets from the network as fast as possible so we can get accurate timing information.
